@@ -1,0 +1,37 @@
+syntax = "proto3";
+
+package bisynx.sync.v1;
+
+import "google/protobuf/timestamp.proto";
+
+
+message SyncRequest {
+  string file_id = 1;
+  bytes file_hash = 2;
+  google.protobuf.Timestamp modified_at = 3;
+
+  uint64 total_size = 4;
+  uint32 chunk_count = 5;
+  bytes file_cast = 6;
+}
+
+message SyncResponse {
+  bool is_synced = 1;
+  repeated uint32 diff_chunks = 2;
+}
+
+message UploadChunkRequest {
+  string file_id = 1;
+  uint32 chunk_index = 2;
+  bytes chunk_hash = 3;
+  bytes chunk_payload = 4;
+}
+
+message UploadChunkResponse {
+  bool success = 1;
+}
+
+service SyncService {
+  rpc Sync(SyncRequest) returns (SyncResponse);
+  rpc UploadChunks(stream UploadChunkRequest) returns (stream UploadChunkResponse);
+}
