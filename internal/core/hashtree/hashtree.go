@@ -11,18 +11,26 @@ type HashTree struct {
 	hasher    Hasher
 }
 
-type Hasher struct {
+type Hasher interface {
+	Hash(left, right []byte) []byte
+	Size() int
+}
+
+type funcHasher struct {
 	hash func(left, right []byte) []byte
 	size int
 }
 
-type node struct {
-	hash   []byte
-	parent *node
+func (h *funcHasher) Hash(left, right []byte) []byte {
+	return h.hash(left, right)
+}
+
+func (h *funcHasher) Size() int {
+	return h.size
 }
 
 func SHA256() Hasher {
-	return Hasher{
+	return &funcHasher{
 		hash: func(left, right []byte) []byte {
 			buf := make([]byte, 0, len(left)+len(right))
 			buf = append(buf, left...)
@@ -34,47 +42,94 @@ func SHA256() Hasher {
 	}
 }
 
+type node struct {
+	hash   []byte
+	parent *node
+}
+
+func getParent(left, right *node, h Hasher) *node {
+	hash := h.Hash(left.hash, right.hash)
+	parent := &node{hash: hash}
+	left.parent = parent
+	right.parent = parent
+	return parent
+}
+
+type Compiler struct {
+	hasher  Hasher
+	current []*node
+	count   int
+	next    *Compiler
+	pending *node
+}
+
+func NewCompiler(hasher Hasher) *Compiler {
+	return &Compiler{hasher: hasher}
+}
+
+func (c *Compiler) add(node *node) {
+	c.count++
+	if c.pending != nil {
+		parent := getParent(c.pending, node, c.hasher)
+		c.pending = nil
+
+		if c.next == nil {
+			c.next = NewCompiler(c.hasher)
+		}
+		c.next.add(parent)
+	} else {
+		c.pending = node
+	}
+}
+
+func (c *Compiler) Add(hash []byte) {
+	node := &node{hash: hash}
+	c.current = append(c.current, node)
+	c.add(node)
+}
+
+func (c *Compiler) compile() *node {
+	if c.pending != nil && c.count > 1 {
+		parent := getParent(c.pending, c.pending, c.hasher)
+		c.pending = nil
+		c.next.add(parent)
+	}
+
+	if c.next != nil {
+		return c.next.compile()
+	}
+
+	return c.pending
+}
+
+func (c *Compiler) Compile() (*HashTree, error) {
+	if c.count == 0 {
+		return nil, errors.New("cannot compile empty tree")
+	}
+
+	root := c.compile()
+	return &HashTree{
+		root:      root,
+		terminals: c.current,
+		hasher:    c.hasher,
+	}, nil
+}
+
 func FromBase(base []byte, h Hasher) (*HashTree, error) {
 	if len(base) == 0 {
 		return nil, errors.New("base is empty")
 	}
 
-	if len(base)%h.size != 0 {
+	size := h.Size()
+
+	if len(base)%size != 0 {
 		return nil, errors.New("invalid base length")
 	}
 
-	terminals := make([]*node, len(base)/h.size)
-	for i := range terminals {
-		terminals[i] = &node{hash: base[i*h.size : (i+1)*h.size]}
+	compiler := NewCompiler(h)
+	for i := 0; i < len(base); i += size {
+		compiler.Add(base[i : i+size])
 	}
 
-	current := terminals
-	for len(current) > 1 {
-		next := make([]*node, (len(current)+1)/2)
-
-		for i := range next {
-			left := current[i*2]
-			var right *node
-
-			if i*2+1 < len(current) {
-				right = current[i*2+1]
-			} else {
-				right = left
-			}
-
-			next[i] = &node{hash: h.hash(left.hash, right.hash)}
-			left.parent = next[i]
-			right.parent = next[i]
-		}
-
-		current = next
-	}
-
-	tree := &HashTree{
-		root:      current[0],
-		terminals: terminals,
-		hasher:    h,
-	}
-
-	return tree, nil
+	return compiler.Compile()
 }
