@@ -1,13 +1,9 @@
 package hashtree
 
-import "errors"
-
 type Compiler struct {
-	hasher  Hasher
-	current []*node
-	count   int
-	next    *Compiler
-	pending *node
+	hasher     Hasher
+	nodeBuffer []*node
+	compiled   bool
 }
 
 func NewCompiler(hasher Hasher) *Compiler {
@@ -22,50 +18,54 @@ func join(left, right *node, h Hasher) *node {
 	return parent
 }
 
-func (c *Compiler) add(node *node) {
-	c.count++
-	if c.pending != nil {
-		parent := join(c.pending, node, c.hasher)
-		c.pending = nil
-
-		if c.next == nil {
-			c.next = NewCompiler(c.hasher)
-		}
-		c.next.add(parent)
-	} else {
-		c.pending = node
-	}
-}
-
-func (c *Compiler) Add(hash []byte) {
-	node := &node{hash: hash}
-	c.current = append(c.current, node)
-	c.add(node)
-}
-
-func (c *Compiler) compile() *node {
-	if c.pending != nil && c.count > 1 {
-		parent := join(c.pending, c.pending, c.hasher)
-		c.pending = nil
-		c.next.add(parent)
+func (c *Compiler) Add(hash []byte) error {
+	if c.compiled {
+		return ErrAlreadyCompiled
 	}
 
-	if c.next != nil {
-		return c.next.compile()
+	if len(hash) != c.hasher.Size() {
+		return &HashSizeError{expect: c.hasher.Size(), got: len(hash)}
 	}
 
-	return c.pending
+	c.nodeBuffer = append(c.nodeBuffer, &node{hash: hash})
+	return nil
 }
 
 func (c *Compiler) Compile() (*HashTree, error) {
-	if c.count == 0 {
-		return nil, errors.New("cannot compile empty tree")
+	if c.compiled {
+		return nil, ErrAlreadyCompiled
 	}
 
-	root := c.compile()
-	return &HashTree{
-		root:      root,
-		terminals: c.current,
-		hasher:    c.hasher,
-	}, nil
+	if len(c.nodeBuffer) == 0 {
+		return nil, ErrEmptyTree
+	}
+
+	tree := &HashTree{terminals: c.nodeBuffer, hasher: c.hasher}
+	for len(c.nodeBuffer) > 1 {
+		nextBuffer := make([]*node, (len(c.nodeBuffer)+1)/2)
+
+		for i := range nextBuffer {
+			var left, right *node
+			left = c.nodeBuffer[i*2]
+
+			if i*2+1 < len(c.nodeBuffer) {
+				right = c.nodeBuffer[i*2+1]
+			} else {
+				right = left
+			}
+
+			nextBuffer[i] = join(left, right, c.hasher)
+		}
+
+		c.nodeBuffer = nextBuffer
+	}
+	c.compiled = true
+
+	tree.top = c.nodeBuffer[0]
+	return tree, nil
+}
+
+func (c *Compiler) Reset() {
+	c.nodeBuffer = nil
+	c.compiled = false
 }
